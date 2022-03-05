@@ -1,17 +1,28 @@
 #!/usr/bin/env python3
-import time, board, adafruit_dht, pandas as pd, datetime, os, telebot, dotenv, requests
+import time, board, adafruit_dht, pandas as pd, datetime, os, telebot, dotenv, requests, traceback, logging
 import matplotlib, matplotlib.pyplot as plt
 import threading
 from datetime import timedelta
 from pathlib import Path
+
+os.chdir(Path(__file__).parent)
+
+logfile = 'temp_sensor.log'
+
+logging.basicConfig(
+    level=logging.WARNING,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler(logfile),
+        logging.StreamHandler()
+    ]
+)
 
 dotenv.load_dotenv()
 
 now = datetime.datetime.now
 
 dhtDevice = adafruit_dht.DHT11(board.D4, use_pulseio=False)
-
-os.chdir(Path(__file__).parent)
 
 datafile = Path('temp_sensor.csv')
 if datafile.exists():
@@ -26,15 +37,15 @@ def sensing():
     last_filter = ctime
     last_notification = datetime.datetime.min
     while True:
-        ctime = now()
-        if ctime - last_write > timedelta(minutes=1):
-            last_write = ctime
-            if ctime - last_filter > timedelta(hours=1):
-                last_filter = ctime
-                indices = list(filter(lambda dt: dt + timedelta(days=7) > ctime, data.index))
-                data = data[indices]
-            data.to_csv(datafile, index_label='datetime')
         try:
+            ctime = now()
+            if ctime - last_write > timedelta(minutes=1):
+                last_write = ctime
+                if ctime - last_filter > timedelta(hours=1):
+                    last_filter = ctime
+                    indices = list(filter(lambda dt: dt + timedelta(days=7) > ctime, data.index))
+                    data = data[indices]
+                data.to_csv(datafile, index_label='datetime')
             temperature_c = dhtDevice.temperature
             print(f'Temperatur: {temperature_c}°C')
             new = pd.Series([temperature_c], index=[ctime], name=data.name)
@@ -45,6 +56,7 @@ def sensing():
         except RuntimeError as error:
             print(error.args[0])
         except Exception as error:
+            log_critical(traceback.format_exc())
             dhtDevice.exit()
             raise error
         time.sleep(5)
@@ -85,14 +97,28 @@ def info(message):
             bot.send_message(message.chat.id, msg)
 
 def polling():
-    success = False
-    while not success:
+    last_log = now()
+    while True:
         try:
             bot.polling()
-            success = True
         except requests.exceptions.RequestException:
-            print('No Internet connection -> no polling')
+            if now() - last_log > timedelta(minutes=5):
+                last_log = now()
+                logging.error('No Internet connection!')
             time.sleep(3)
+        except Exception:
+            log_critical(traceback.format_exc())
+
+def log_critical(exc):
+    logging.critical(exc)
+    if now() - log_critical.last > timedelta(hours=6):
+        log_critical.last = now()
+        chat_id = os.environ['chat_id_error']
+        bot.send_message(chat_id, exc.strip().splitlines()[-1])
+        with open(logfile, 'rb') as file:
+            bot.send_document(chat_id, file)
+
+log_critical.last = datetime.datetime.min
 
 t1 = threading.Thread(target=sensing)
 t2 = threading.Thread(target=polling)
