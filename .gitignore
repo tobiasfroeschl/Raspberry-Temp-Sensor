@@ -1,0 +1,4 @@
+*.csv
+*.env
+*.png
+plot.py
