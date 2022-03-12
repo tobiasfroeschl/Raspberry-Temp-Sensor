@@ -33,39 +33,44 @@ else:
 def sensing():
     global data
     ctime = now()
-    last_write = ctime
     last_filter = ctime
     last_notification = datetime.datetime.min
     while True:
         try:
             ctime = now()
-            if ctime - last_write > timedelta(minutes=1):
-                last_write = ctime
-                if ctime - last_filter > timedelta(hours=1):
-                    last_filter = ctime
-                    indices = list(filter(lambda dt: dt + timedelta(days=7) > ctime, data.index))
-                    data = data[indices]
-                data.to_csv(datafile, index_label='datetime')
-            temperature_c = dhtDevice.temperature
+            if ctime - last_filter > timedelta(hours=1):
+                last_filter = ctime
+                indices = list(filter(lambda dt: dt + timedelta(weeks=5) > ctime, data.index))
+                data = data[indices]
+            data.to_csv(datafile, index_label='datetime')
+            success = False
+            while not success:
+                try:
+                    temperature_c = dhtDevice.temperature
+                    if type(temperature_c) == int:
+                        success = True
+                    else:
+                        time.sleep(1)
+                except RuntimeError as error:
+                    print(error.args[0])
+                    time.sleep(1)
             print(f'Temperatur: {temperature_c}°C')
             new = pd.Series([temperature_c], index=[ctime], name=data.name)
             data = pd.concat([data, new])
-            if temperature_c >= 30 and ctime - last_notification > timedelta(hours=1):
-                bot.send_message(os.environ['chat_id'], f'Die Temperatur wurde überschritten und beträgt {temperature_c}°C.')
+            if temperature_c <= 50 and ctime - last_notification > timedelta(hours=1):
+                bot.send_message(os.environ['chat_id'], f'Die Temperatur wurde unterschritten und beträgt {temperature_c}°C.')
                 last_notification = ctime
-        except RuntimeError as error:
-            print(error.args[0])
         except Exception as error:
             log_critical(traceback.format_exc())
             dhtDevice.exit()
             raise error
-        time.sleep(5)
+        time.sleep(60)
 
 bot = telebot.TeleBot(os.environ['API_KEY'])
 
 help_msg = '''\
-Aktuell: Gibt die aktuelle Temperatur aus.
-Diagramm: Sendet ein Diagramm des Temperaturverlaufs der letzten 3 Stunden.\
+*A*: Gibt die aktuelle Temperatur aus.
+*D*: Sendet ein Diagramm des Temperaturverlaufs. Beispiele: _D3_ sendet die letzten 3 Stunden, _D24_ die letzten 24 Stunden. Im Prinzip ist jede beliebige natürliche Zahl möglich. \
 '''
 
 plotfile = 'plot.png'
@@ -74,27 +79,33 @@ plotfile = 'plot.png'
 def info(message):
     global data
     if time.time() - message.date < 5:   # only messages which are newer than 5 seconds
-        if message.text == 'Aktuell':
+        if message.text == 'A':
             msg = f'aktuelle Temperatur: {data[-1]}°C'
             bot.send_message(message.chat.id, msg)
-        elif message.text == 'Diagramm':
-            indices = list(filter(lambda dt: dt + timedelta(hours=3) > now(), data.index))
+        elif message.text.startswith('D') and message.text.strip()[1:].isdecimal():
+            hours = int(message.text.strip()[1:])
+            indices = list(filter(lambda dt: dt + timedelta(hours=hours) > now(), data.index))
             data_filtered = data[indices]
-            plt.figure()
+            fig = plt.figure(dpi=200)
             plt.plot(data_filtered)
-            myFmt = matplotlib.dates.DateFormatter('%H:%M')
+            if hours <= 24:
+                myFmt = matplotlib.dates.DateFormatter('%H:%M')
+            else:
+                myFmt = matplotlib.dates.DateFormatter('%-d.%-m %H:%M')
+                fig.autofmt_xdate()
             plt.gca().xaxis.set_major_formatter(myFmt)
             plt.xlabel('Uhrzeit')
             plt.ylabel('Grad Celsius')
-            plt.ylim([10, 70])
+            plt.ylim([20, 80])
+            plt.grid()
             plt.savefig(plotfile)
             with open(plotfile, 'rb') as photo:
                 bot.send_photo(message.chat.id, photo)
         elif message.text == 'Hilfe':
-            bot.send_message(message.chat.id, help_msg)
+            bot.send_message(message.chat.id, help_msg, parse_mode='Markdown')
         else:
             msg = 'Ich verstehe dich nicht!\n' + help_msg
-            bot.send_message(message.chat.id, msg)
+            bot.send_message(message.chat.id, msg, parse_mode='Markdown')
 
 def polling():
     last_log = now()
