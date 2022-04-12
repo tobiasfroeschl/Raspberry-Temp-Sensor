@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import time, board, adafruit_dht, pandas as pd, datetime, os, telebot, dotenv, requests, traceback, logging
+import time, board, adafruit_dht, pandas as pd, datetime, os, telebot, dotenv, requests, traceback, logging, io
 import matplotlib, matplotlib.pyplot as plt
 import threading
 from datetime import timedelta
@@ -19,6 +19,8 @@ logging.basicConfig(
 )
 
 dotenv.load_dotenv()
+CHAT_ID = int(os.environ['CHAT_ID'])
+CHAT_ID_ERROR = int(os.environ['CHAT_ID_ERROR'])
 
 now = datetime.datetime.now
 
@@ -57,8 +59,8 @@ def sensing():
             print(f'Temperatur: {temperature_c}°C')
             new = pd.Series([temperature_c], index=[ctime], name=data.name)
             data = pd.concat([data, new])
-            if temperature_c <= 50 and ctime - last_notification > timedelta(hours=1):
-                bot.send_message(os.environ['chat_id'], f'Die Temperatur wurde unterschritten und beträgt {temperature_c}°C.')
+            if temperature_c != None and temperature_c <= 50 and ctime - last_notification > timedelta(hours=1):
+                bot.send_message(CHAT_ID, f'Die Temperatur wurde unterschritten und beträgt {temperature_c}°C.')
                 last_notification = ctime
         except Exception as error:
             log_critical(traceback.format_exc())
@@ -73,17 +75,17 @@ help_msg = '''\
 *D*: Sendet ein Diagramm des Temperaturverlaufs. Beispiele: _D3_ sendet die letzten 3 Stunden, _D24_ die letzten 24 Stunden. Im Prinzip ist jede beliebige natürliche Zahl möglich. \
 '''
 
-plotfile = 'plot.png'
-
 @bot.message_handler()
 def info(message):
     global data
-    if time.time() - message.date < 5:   # only messages which are newer than 5 seconds
+    if time.time() - message.date < 5 and message.chat.id in {CHAT_ID, CHAT_ID_ERROR}:   # only messages which are newer than 5 seconds
         if message.text == 'A':
             msg = f'aktuelle Temperatur: {data[-1]}°C'
             bot.send_message(message.chat.id, msg)
         elif message.text.startswith('D') and message.text.strip()[1:].isdecimal():
             hours = int(message.text.strip()[1:])
+            if hours == 0:
+                return
             indices = list(filter(lambda dt: dt + timedelta(hours=hours) > now(), data.index))
             data_filtered = data[indices]
             fig = plt.figure(dpi=200)
@@ -98,9 +100,13 @@ def info(message):
             plt.ylabel('Grad Celsius')
             plt.ylim([20, 80])
             plt.grid()
-            plt.savefig(plotfile)
-            with open(plotfile, 'rb') as photo:
-                bot.send_photo(message.chat.id, photo)
+            buf = io.BytesIO()
+            plt.savefig(buf)
+            buf.seek(0)
+            bot.send_photo(message.chat.id, buf)
+        elif message.text.lower() == 'log':
+            with open(logfile, 'rb') as file:
+                bot.send_document(message.chat.id, file)
         elif message.text == 'Hilfe':
             bot.send_message(message.chat.id, help_msg, parse_mode='Markdown')
         else:
@@ -124,10 +130,9 @@ def log_critical(exc):
     logging.critical(exc)
     if now() - log_critical.last > timedelta(hours=6):
         log_critical.last = now()
-        chat_id = os.environ['chat_id_error']
-        bot.send_message(chat_id, exc.strip().splitlines()[-1])
+        bot.send_message(CHAT_ID_ERROR, exc.strip().splitlines()[-1])
         with open(logfile, 'rb') as file:
-            bot.send_document(chat_id, file)
+            bot.send_document(CHAT_ID_ERROR, file)
 
 log_critical.last = datetime.datetime.min
 
